@@ -44,6 +44,7 @@ team_t team = {
 #define CHUNKSIZE   (1<<7)      /* initial heap size (bytes) */
 
 #define MAX(x,y) ((x) > (y)?(x) :(y))
+#define MIN(x,y) ((x) < (y)?(x) :(y))
 
 /* Pack a size and allocated bit into a word */
 #define PACK(size, alloc) ((size) | (alloc))
@@ -66,6 +67,12 @@ team_t team = {
 
 void* heap_listp = NULL;
 
+// data structure heap pointer
+void* heap_list_segp = NULL;
+
+void *mm_malloc_ori(size_t size);
+void mm_free_ori(void* bp);
+
 /* Data structure for segregated list
  * An array of pointers to doubly linked lists
  * will be used for each 'hash' value
@@ -73,79 +80,76 @@ void* heap_listp = NULL;
 typedef struct seg_block{
 	struct seg_block* next;
 	struct seg_block* prev;
+	void* bp;
 } seg_block;
 
+// build a new seg block using data structure heap mem
+seg_block* build_block(void* bp, seg_block* next, seg_block* prev){
+	seg_block* new_block = mm_malloc_ori(sizeof (seg_block));
+	new_block->next = next;
+	new_block->prev = prev;
+	new_block->bp = bp;
+	return new_block;
+}
+
 //for now starting with only 10 values in key-value mapping
-#define NUM_KEYS 10
+#define NUM_KEYS 15
 seg_block* seg_list_arr[NUM_KEYS];
 
 //returns log base 2 of size
-int log_hash(int size){
+int log_hash(size_t size){
 
 	int index = 0;
-	int val = 1;
+	size_t val = 1;
 	
 	//keep shifting val to the left until it's bigger than size
 	
-	for(index = 0; index < NUM_KEYS; index++){
-		if(size<=val){
-			break;
-		}
+	while(size < val) {
 		val <<= 1;
+		index++;
 	}
-	
+		
 	//min shifts is 5, because min seg block size is 32
 	index = MAX(index,5);
-	
-	return index>NUM_KEYS-1? NUM_KEYS-1 : index;
+	index = MIN(index, NUM_KEYS-1);
+	return index;
 	
 }
 
-void add_to_seg_list(seg_block* block){
-	size_t size = GET_SIZE(HDRP(block));
+void add_to_seg_list(void* bp){
+	size_t size = GET_SIZE(HDRP(bp));
 	int index = log_hash(size);
-	
-	if(block==NULL){
-		return;
-	}
+	seg_block* block = build_block(bp, seg_list_arr[index], NULL);
 	
 	//seg list empty
 	if(seg_list_arr[index] == NULL){
 		seg_list_arr[index] = block;
-		seg_list_arr[index]->prev = NULL;
-		seg_list_arr[index]->next = NULL;
 	}else{ //seg list not empty, add to the front
-		block->next = seg_list_arr[index];
-		block->next->prev = block;
-		seg_list_arr[index] = block;		
+		seg_list_arr[index]->prev = block;
+		seg_list_arr[index] = block;
 	}
 }
 
-void rm_from_seg_list(seg_block* block){
-	size_t size = GET_SIZE(HDRP(block));
-	int index = log_hash(size);
-	
-	if(block==NULL){
-		return;
-	}
-	
+void rm_from_seg_list(int index){
+	seg_block* block = seg_list_arr[index];
 	//case where there's just one block
 	if(block->prev == NULL && block->next == NULL){
+		mm_free_ori(block);
 		seg_list_arr[index] = NULL;
-		return;
 	}
-	
 	//3 cases for doubly linked list
 	//head, middle, end
-	if(block->prev == NULL && block->next != NULL){
+	else if(block->prev == NULL && block->next != NULL){
 		seg_list_arr[index] = block->next;
 		seg_list_arr[index]->prev = NULL;
-	}else if(block->prev != NULL && block->next != NULL){
+		mm_free_ori(block);
+	}
+	/*else if(block->prev != NULL && block->next != NULL){
 		block->next->prev = block->prev;
 		block->prev->next = block->next;
 	}else if(block->next == NULL && block->prev != NULL){
 		block->prev->next = NULL;
-	}
+	}*/
 }
 
 
@@ -163,6 +167,15 @@ void rm_from_seg_list(seg_block* block){
      PUT(heap_listp + (2 * WSIZE), PACK(DSIZE, 1));   // prologue footer
      PUT(heap_listp + (3 * WSIZE), PACK(0, 1));    // epilogue header
      heap_listp += DSIZE;
+
+     // allocate mem for data structure
+     if ((heap_list_segp = mem_sbrk(4*WSIZE)) == (void *)-1)
+           return -1;
+       PUT(heap_list_segp, 0);                         // alignment padding
+       PUT(heap_list_segp + (1 * WSIZE), PACK(DSIZE, 1));   // prologue header
+       PUT(heap_list_segp + (2 * WSIZE), PACK(DSIZE, 1));   // prologue footer
+       PUT(heap_list_segp + (3 * WSIZE), PACK(0, 1));    // epilogue header
+       heap_list_segp += DSIZE;
 
      //initialize keys to null
      for (int i = 0; i<NUM_KEYS; i++){
@@ -191,9 +204,14 @@ void *coalesce(void *bp)
     }
 
     else if (prev_alloc && !next_alloc) { /* Case 2 */
-        size += GET_SIZE(HDRP(NEXT_BLKP(bp)));
+        //size_t oldsize = size;
+    	size += GET_SIZE(HDRP(NEXT_BLKP(bp)));
         PUT(HDRP(bp), PACK(size, 0));
         PUT(FTRP(bp), PACK(size, 0));
+        //configure seg list to move the coalesced blocks together
+        //can either divide up the blocks into further blocks to try to get good fit
+        //or just leave it and potentially get higher internal fragmentation
+        
         return (bp);
     }
 
@@ -247,6 +265,8 @@ void *extend_heap(size_t words)
  **********************************************************/
 void * find_fit(size_t asize)
 {
+	//change this to just use log_hash to find if there is a free block
+	//if there isn't enough space, alloc on heap more space
     void *bp;
     for (bp = heap_listp; GET_SIZE(HDRP(bp)) > 0; bp = NEXT_BLKP(bp))
     {
@@ -255,6 +275,26 @@ void * find_fit(size_t asize)
             return bp;
         }
     }
+    
+    return NULL;
+}
+
+// find_fit for segregated list
+
+void * find_fit_seg(size_t asize)
+{
+    int index = log_hash(asize);
+    void* bp;
+    while(index < NUM_KEYS){
+    	if(seg_list_arr[index] != NULL){
+    		//rm from seg list
+    		bp = seg_list_arr[index]->bp;
+    		rm_from_seg_list(index);
+    		return bp;
+    	}
+    	index++;
+    }
+    
     return NULL;
 }
 
@@ -271,13 +311,29 @@ void place(void* bp, size_t asize)
   PUT(FTRP(bp), PACK(bsize, 1));
 }
 
+
 /**********************************************************
  * mm_free
  * Free the block and coalesce with neighbouring blocks
  **********************************************************/
 void mm_free(void *bp)
 {
-    if(bp == NULL){
+    //fix the blocks in the coalesce function
+	if(bp == NULL){
+      return;
+    }
+    size_t size = GET_SIZE(HDRP(bp));
+    PUT(HDRP(bp), PACK(size,0));
+    PUT(FTRP(bp), PACK(size,0));
+    coalesce(bp);
+    add_to_seg_list(bp);
+}
+
+// original method
+void mm_free_ori(void *bp)
+{
+    //fix the blocks in the coalesce function
+	if(bp == NULL){
       return;
     }
     size_t size = GET_SIZE(HDRP(bp));
@@ -285,7 +341,6 @@ void mm_free(void *bp)
     PUT(FTRP(bp), PACK(size,0));
     coalesce(bp);
 }
-
 
 /**********************************************************
  * mm_malloc
@@ -296,6 +351,38 @@ void mm_free(void *bp)
  * If no block satisfies the request, the heap is extended
  **********************************************************/
 void *mm_malloc(size_t size)
+{
+    size_t asize; /* adjusted block size */
+    size_t extendsize; /* amount to extend heap if no fit */
+    char * bp;
+
+    /* Ignore spurious requests */
+    if (size == 0)
+        return NULL;
+
+    /* Adjust block size to include overhead and alignment reqs. */
+    if (size <= DSIZE)
+        asize = 2 * DSIZE;
+    else
+        asize = DSIZE * ((size + (DSIZE) + (DSIZE-1))/ DSIZE);
+
+    /* Search the free list for a fit */
+    if ((bp = find_fit_seg(asize)) != NULL) {
+        place(bp, asize);
+        return bp;
+    }
+
+    /* No fit found. Get more memory and place the block */
+    extendsize = MAX(asize, CHUNKSIZE);
+    if ((bp = extend_heap(extendsize/WSIZE)) == NULL)
+        return NULL;
+    place(bp, asize);
+    return bp;
+
+}
+
+// orignal method
+void *mm_malloc_ori(size_t size)
 {
     size_t asize; /* adjusted block size */
     size_t extendsize; /* amount to extend heap if no fit */
