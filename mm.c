@@ -66,7 +66,7 @@ team_t team = {
 #define PREV_BLKP(bp) ((char *)(bp) - GET_SIZE(((char *)(bp) - DSIZE)))
 
 void* heap_listp = NULL;
-
+int mm_check(void);
 // data structure heap pointer
 void* heap_list_segp = NULL;
 
@@ -470,6 +470,7 @@ void *mm_malloc(size_t size)
     /* Search the free list for a fit */
     if ((bp = find_fit_seg(asize)) != NULL) {
         place(bp, asize);
+        mm_check();
         return bp;
     }
 
@@ -478,6 +479,7 @@ void *mm_malloc(size_t size)
     if ((bp = extend_heap_seg(extendsize/WSIZE)) == NULL)
         return NULL;
     place(bp, asize);
+    mm_check();
     return bp;
 
 }
@@ -552,5 +554,30 @@ void *mm_realloc(void *ptr, size_t size)
  * Return nonzero if the heap is consistant.
  *********************************************************/
 int mm_check(void){
+	
+	//print out heap
+	void* heap_start = heap_listp;
+	
+	printf("START OF HEAP \n");
+	while(GET_SIZE(HDRP(heap_start)) != 0){
+		printf("Address: 0x:%x tSize: %d Allocated: %d\n",heap_start, GET_SIZE(HDRP(heap_start)), GET_ALLOC(HDRP(heap_start)));
+		heap_start = NEXT_BLKP(heap_start);
+	}
+	printf("END OF HEAP \n");
+	
+	printf("START OF SEG LIST\n");
+	//print out free list
+	for (int i = 0; i < NUM_KEYS; i++){
+		seg_block* traverse = seg_list_arr[i];
+		
+		while(traverse != NULL){
+			
+			printf("Address: 0x:%x tSize: %d Allocated: %d\n",traverse, GET_SIZE(HDRP(traverse)), GET_ALLOC(HDRP(traverse)));
+			traverse = traverse->next;
+		}
+		
+	}
+	
+	printf("END OF SEG LIST\n");
   return 1;
 }
