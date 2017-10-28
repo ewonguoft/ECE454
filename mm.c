@@ -265,7 +265,9 @@ void *coalesce(void *bp)
 // coaleasce func used by seg
 void *coalesce_seg(void *bp)
 {
-    size_t prev_alloc = GET_ALLOC(FTRP(PREV_BLKP(bp)));
+    //printf("coalesce called\n");
+    //mm_check();
+	size_t prev_alloc = GET_ALLOC(FTRP(PREV_BLKP(bp)));
     size_t next_alloc = GET_ALLOC(HDRP(NEXT_BLKP(bp)));
     size_t size = GET_SIZE(HDRP(bp));
     //printf("size: %ld\n", size);
@@ -304,16 +306,15 @@ void *coalesce_seg(void *bp)
     else {            /* Case 4 */
         size_t prev_size = GET_SIZE(HDRP(PREV_BLKP(bp)));
         size_t next_size = GET_SIZE(HDRP(NEXT_BLKP(bp)));
-        size += prev_size + next_size;
-        PUT(HDRP(PREV_BLKP(bp)), PACK(size,0));
-        PUT(FTRP(NEXT_BLKP(bp)), PACK(size,0));
-        
         int index = log_hash(prev_size);
         rm_from_seg_list_sp(index, (seg_block*) PREV_BLKP(bp));
         
         index = log_hash(next_size);
         rm_from_seg_list_sp(index, (seg_block*) NEXT_BLKP(bp));
-        
+        size += prev_size + next_size;
+        PUT(HDRP(PREV_BLKP(bp)), PACK(size,0));
+        PUT(FTRP(NEXT_BLKP(bp)), PACK(size,0));
+
         return (PREV_BLKP(bp));
     }
 }
@@ -362,6 +363,7 @@ void *extend_heap_seg(size_t words)
 
     /* Coalesce if the previous block was free */
     return coalesce_seg(bp);
+    //return bp;
 }
 /**********************************************************
  * find_fit
@@ -389,7 +391,8 @@ void * find_fit(size_t asize)
 
 void * find_fit_seg(size_t asize)
 {
-    int index = log_hash(asize);
+    //printf("in find_fit_seg\n");
+	int index = log_hash(asize);
     void* bp;
     seg_block* sp = NULL;
     while(index < NUM_KEYS){
@@ -402,11 +405,31 @@ void * find_fit_seg(size_t asize)
                 }
                 sp = sp->next;
             }
-            if (sp != NULL) {
+            //found block fit but can't break up block into more pieces
+            if (sp != NULL && (asize + 2*DSIZE) > GET_SIZE(HDRP(bp)) ) {
                 //rm from seg list
     		    bp = (void*) sp;
     		    rm_from_seg_list_sp(index, sp);
     		    return bp;
+            }else{
+            	if(sp!=NULL){
+					//split up blocks into 2
+            		//printf("special split:\n");
+					rm_from_seg_list_sp(index, sp);
+					int extra_size = GET_SIZE(HDRP(bp)) - asize;
+					
+					void* malloc_ptr = bp + extra_size;
+					
+					PUT(HDRP(malloc_ptr), PACK(asize,0));
+					PUT(FTRP(malloc_ptr), PACK(asize,0));
+					
+					PUT(HDRP(bp), PACK(extra_size,0));
+					PUT(FTRP(bp), PACK(extra_size,0));
+					
+					add_to_seg_list(bp);
+					
+					return malloc_ptr;
+            	}
             }
     	}
     	index++;
