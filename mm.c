@@ -597,6 +597,20 @@ void *mm_realloc(void *ptr, size_t size)
 /**********************************************************
  * mm_check
  * Check the consistency of the memory heap
+ * Heap checker does the following: 
+ * 
+ * 1) check if every block in free list is marked as free
+ * 
+ * 2) check if any contiguous blocks escaped coalesce
+ * 
+ * 3) check if every free block is actually free
+ * 
+ * 4) check if pointers in free block point to valid free blocks
+ * 
+ * 5) check if any allocated blocks overlap
+ * 
+ * 6) check if pointers in a heap block point to a valid address
+ * 
  * Return nonzero if the heap is consistant.
  *********************************************************/
 int mm_check(void){
@@ -606,24 +620,46 @@ int mm_check(void){
 	
 	printf("START OF HEAP \n");
 	while(GET_SIZE(HDRP(heap_start)) != 0){
-		printf("Address: 0x:%x tSize: %d Allocated: %d\n",heap_start, GET_SIZE(HDRP(heap_start)), GET_ALLOC(HDRP(heap_start)));
+		int curr_alloc = GET_ALLOC(HDRP(heap_start));
+		
+		printf("Address: 0x:%x tSize: %d Allocated: %d\n",heap_start, GET_SIZE(HDRP(heap_start)), curr_alloc);
+		
 		heap_start = NEXT_BLKP(heap_start);
+		
+		//check for escape coalescing
+		if(curr_alloc == 0 && GET_ALLOC(HDRP(heap_start)) == 0){
+			printf("block escaped coalescing, but this could be fine if this was called before coalesce\n");
+		}
+		
+		//check for overlap
+		if(FTRP(heap_start) > HDRP(NEXT_BLKP(heap_start)) ){
+			printf("THERE IS BLOCK OVERLAP at: %x\n",heap_start);
+			return 0;
+		}
 	}
 	printf("END OF HEAP \n");
 	
 	printf("START OF SEG LIST\n");
 	//print out free list
+	//and check to see if each block is free. 
 	for (int i = 0; i < NUM_KEYS; i++){
 		seg_block* traverse = seg_list_arr[i];
 		printf("hash value: %d\n",i);
 		while(traverse != NULL){
 			
-			printf("Address: 0x:%x tSize: %d Allocated: %d\n",traverse, GET_SIZE(HDRP(traverse)), GET_ALLOC(HDRP(traverse)));
+			int free_bit = GET_ALLOC(HDRP(traverse));
+			
+			printf("Address: 0x:%x tSize: %d Allocated: %d\n",traverse, GET_SIZE(HDRP(traverse)), free_bit);
+			
+			if(free_bit!=0){
+				printf("free bit isn't 0. This could be fine depending on where mm_check() is called.\n");
+			}
 			
 			traverse = traverse->next;
 		}
 		
 	}
+	
 	
 	printf("END OF SEG LIST\n");
   return 1;
