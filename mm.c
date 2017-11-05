@@ -563,6 +563,11 @@ void *mm_malloc_ori(size_t size)
 
 /**********************************************************
  * mm_realloc
+ * size = 0 means that it's a free
+ * if ptr is NULL, it means that it's a malloc
+ * if ptr is a valid ptr, and size is > 0 there are 2 cases
+ * Case 1: size > old_size and we need to expand the allocated mem
+ * Case 2: size < old_size and we need to shrink the allocated mem
  * Implemented simply in terms of mm_malloc and mm_free
  *********************************************************/
 void *mm_realloc(void *ptr, size_t size)
@@ -580,18 +585,83 @@ void *mm_realloc(void *ptr, size_t size)
     void *oldptr = ptr;
     void *newptr;
     size_t copySize;
-
+/*
     newptr = mm_malloc(size);
     if (newptr == NULL)
       return NULL;
-
+*/
     /* Copy the old data. */
     copySize = GET_SIZE(HDRP(oldptr));
-    if (size < copySize)
+    
+    /* Adjust block size to include overhead and alignment reqs. */
+	if (size <= DSIZE)
+		size = 2 * DSIZE;
+	else
+		size = DSIZE * ((size + (DSIZE) + (DSIZE-1))/ DSIZE);
+
+    if (size > copySize){
+    	//Case 1: expand
+/*    	PUT(HDRP(oldptr),PACK(copySize,0));
+    	PUT(FTRP(oldptr),PACK(copySize,0));
+    	
+    	//ptr may be a new location now, oldptr is still old location
+    	ptr = coalesce_seg(oldptr);
+    	
+    	size_t new_block_size = GET_SIZE(HDRP(oldptr));
+    	
+    	if(new_block_size >= size){
+    		//just copy over oldptr size without hp and fp, no need to expand heap
+    		memmove(ptr, oldptr, copySize - DSIZE);
+    		//add new header and footer and return
+    		PUT(HDRP(ptr),PACK(new_block_size,1));
+    		PUT(FTRP(ptr),PACK(new_block_size,1));
+    		
+    		return ptr;
+    	}
+*/		//do the original realloc
+		newptr = mm_malloc(size);
+		if (newptr == NULL)
+		  return NULL;
+		memcpy(newptr, oldptr, copySize - DSIZE);
+		PUT(HDRP(oldptr),PACK(copySize,0));
+		PUT(FTRP(oldptr),PACK(copySize,0));
+		add_to_seg_list(ptr);
+
+		return newptr;
+    	
+    }else{
+    	//Case 2: shrink 
+    	size_t size_diff = copySize - size;
+    	
+    	if(size_diff >= 2 * DSIZE){
+    		//enforce at least 4 words are free
+    		//adjust the header and ptr of new block
+    		PUT(HDRP(oldptr),PACK(size,1));
+    		PUT(FTRP(oldptr),PACK(size,1));
+    		
+    		//cut off free block and add to seg list
+    		
+    		newptr = oldptr + size;
+    		PUT(HDRP(newptr),PACK(size_diff,0));
+    		PUT(FTRP(newptr),PACK(size_diff,0));
+    		
+    		add_to_seg_list(newptr);
+    		
+    		return oldptr;
+    		
+    	}else{
+    		return oldptr;
+    	}
+    }
+    
+/*    if (size < copySize)
       copySize = size;
     memcpy(newptr, oldptr, copySize);
     mm_free(oldptr);
+
     return newptr;
+*/
+    return NULL;
 }
 
 /**********************************************************
