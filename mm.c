@@ -244,6 +244,32 @@ void *coalesce_seg(void *bp)
     }
 }
 
+size_t get_coalesce_size(void* bp) {
+    size_t prev_alloc = GET_ALLOC(FTRP(PREV_BLKP(bp)));
+    size_t next_alloc = GET_ALLOC(HDRP(NEXT_BLKP(bp)));
+    size_t size = GET_SIZE(HDRP(bp));
+    //printf("size: %ld\n", size);
+    if (prev_alloc && next_alloc) {       /* Case 1 */
+        return size;
+    }
+
+    else if (prev_alloc && !next_alloc) { /* Case 2 */
+        size_t new_size = GET_SIZE(HDRP(NEXT_BLKP(bp)));
+    	size += new_size;
+    }
+
+    else if (!prev_alloc && next_alloc) { /* Case 3 */
+        size_t new_size = GET_SIZE(HDRP(PREV_BLKP(bp)));
+    	size += new_size;
+    }
+
+    else {            /* Case 4 */
+        size_t prev_size = GET_SIZE(HDRP(PREV_BLKP(bp)));
+        size_t next_size = GET_SIZE(HDRP(NEXT_BLKP(bp)));
+        size += prev_size + next_size;
+    }
+    return size;
+}
 
 /**********************************************************
  * extend_heap_seg
@@ -305,18 +331,19 @@ void * find_fit_seg(size_t asize)
             	if(sp!=NULL){
 					//split up blocks into 2
             		//printf("special split:\n");
+                    bp = (void*) sp;
 					rm_from_seg_list_sp(index, sp);
 					size_t extra_size = GET_SIZE(HDRP(bp)) - asize;
 					
-					void* malloc_ptr = bp + asize;
+					void* split_ptr = bp + asize;
 					
 					PUT(HDRP(bp), PACK(asize,0));
 					PUT(FTRP(bp), PACK(asize,0));
 					
-					PUT(HDRP(malloc_ptr), PACK(extra_size,0));
-					PUT(FTRP(malloc_ptr), PACK(extra_size,0));
+					PUT(HDRP(split_ptr), PACK(extra_size,0));
+					PUT(FTRP(split_ptr), PACK(extra_size,0));
 					
-					add_to_seg_list(malloc_ptr);
+					add_to_seg_list(split_ptr);
 					
 					return bp;
             	}
@@ -431,82 +458,73 @@ void *mm_realloc(void *ptr, size_t size)
     size_t copySize;
     size_t asize;
     size_t oldSize;
-/*
-    newptr = mm_malloc(size);
-    if (newptr == NULL)
-      return NULL;
-*/
-    /* Copy the old data. */
+
+    //printf("realloc addr %x, for size %d\n", ptr, size);
     oldSize = GET_SIZE(HDRP(oldptr));
-    
+    copySize = oldSize;
+    if (size < oldSize)
+        copySize = size;
+
     /* Adjust block size to include overhead and alignment reqs. */
 	if (size <= DSIZE)
 		asize = 2 * DSIZE;
 	else
 		asize = DSIZE * ((size + (DSIZE) + (DSIZE-1)) / DSIZE);
 
-    if (asize > oldSize){
+    if (asize > oldSize) {
     	//Case 1: expand
-    	PUT(HDRP(oldptr),PACK(oldSize,0));
-    	PUT(FTRP(oldptr),PACK(oldSize,0));
+       
+        PUT(HDRP(oldptr),PACK(oldSize,0));
+        PUT(FTRP(oldptr),PACK(oldSize,0));
+    	size_t new_block_size = get_coalesce_size(oldptr);
     	
-    	//ptr may be a new location now, oldptr is still old location
-    	newptr = coalesce_seg(oldptr);
-    	
-    	size_t new_block_size = GET_SIZE(HDRP(newptr));
-    	
-    	if(new_block_size >= asize){
-    		
-    		//just copy over oldptr size without hp and fp, no need to expand heap
+    	if (new_block_size >= asize) {
+    	    //ptr may be a new location now, oldptr is still old location
+    	    newptr = coalesce_seg(oldptr);
+
+            //just copy over oldptr size without hp and fp, no need to expand heap
     		memmove(newptr, oldptr, oldSize - DSIZE);
     		
     		size_t extra_size = new_block_size - asize;
     		
-    		if(extra_size >= 2 * DSIZE) {
-			//add new header and footer and return
+    		if (0 && extra_size >= 2 * DSIZE) {
+			    //add new header and footer and return
 				PUT(HDRP(newptr),PACK(asize,1));
 				PUT(FTRP(newptr),PACK(asize,1));
 				
 				void* split_ptr = newptr + asize;
 				PUT(HDRP(split_ptr),PACK(extra_size,0));
 				PUT(FTRP(split_ptr),PACK(extra_size,0));
-				
+				printf("1new block size: %d, asize: %d, old size: %d\n", new_block_size, asize, oldSize);
 				add_to_seg_list(split_ptr);
-				
-				return newptr;
-				
+                //mm_check();
     		} else {
         		//add new header and footer and return
         		PUT(HDRP(newptr),PACK(new_block_size,1));
         		PUT(FTRP(newptr),PACK(new_block_size,1));
-        		
-        		return newptr;	
+                //printf("2new block size: %d, asize: %d, old size: %d\n", new_block_size, asize, oldSize);
+                //mm_check();
     		}
+
+            return newptr;
     	}
-    	
-    	PUT(HDRP(newptr),PACK(new_block_size,0));
-    	PUT(FTRP(newptr),PACK(new_block_size,0));
-    	add_to_seg_list(newptr);
-    	
+        
+    	//mm_check();
 		//do the original realloc
 		newptr = mm_malloc(asize);
 		if (newptr == NULL)
 		  return NULL;
-		memmove(newptr, oldptr, oldSize - DSIZE);
-/*		PUT(HDRP(oldptr),PACK(copySize,0));
-		PUT(FTRP(oldptr),PACK(copySize,0));
-		//coalesce_seg(ptr);
-		add_to_seg_list(ptr);
-
-		mm_free(ptr);
-*/		
-		return newptr;
+		memmove(newptr, oldptr, copySize);
+        mm_free(oldptr);
+		//mm_check();
+        //printf("3new block size: %d, asize: %d, old size: %d\n", new_block_size, asize, oldSize);
+        return newptr;
 
     } else {
     	//Case 2: shrink 
-    	size_t size_diff = oldSize - asize;
+    	size_t extra_size = oldSize - asize;
     	
-    	if(size_diff >= 2 * DSIZE){
+    	if (extra_size >= 2 * DSIZE) {
     		//enforce at least 4 words are free
     		//adjust the header and ptr of new block
     		PUT(HDRP(oldptr),PACK(asize,1));
@@ -515,25 +533,18 @@ void *mm_realloc(void *ptr, size_t size)
     		//cut off free block and add to seg list
     		
     		newptr = oldptr + asize;
-    		PUT(HDRP(newptr),PACK(size_diff,0));
-    		PUT(FTRP(newptr),PACK(size_diff,0));
+    		PUT(HDRP(newptr),PACK(extra_size,0));
+    		PUT(FTRP(newptr),PACK(extra_size,0));
     		
     		add_to_seg_list(newptr);
     		
     		return oldptr;
     		
-    	}else {
+    	} else {
     		return oldptr;
     	}
     }
     
-/*    if (size < copySize)
-      copySize = size;
-    memcpy(newptr, oldptr, copySize);
-    mm_free(oldptr);
-
-    return newptr;
-*/
     return NULL;
 }
 
