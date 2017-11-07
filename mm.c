@@ -1,16 +1,32 @@
 /*
- * This is an implementation of a segregated free list.
+ * This is an implementation of a segregated free list. Immediate 
+ * coalescing is also used, so coalescing is done when mm_free is called.
  * For the free blocks, it uses block sizes from 2^5 to 2^15 
  * where blocks in the free list are a power of 2 but less than
  * the next level (e.g. block sizes of 32-63 are in 2^5). They 
  * are hashed in using a simple log hash, and then stored as
  * a linked list. The allocated blocks are an implementation of
- * a header, payload, and footer. 
+ * a header, payload, and footer. The free blocks are using a header
+ * footer, and 2 pointers, therefore the minimum block size is 32 bytes.
+ * 
  * 
  * The allocator manipualtes the free list when mm_alloc, mm_realloc 
  * and, mm_free is called. When mm_alloc is called it first checks
  * the free list and looks for any block sizes that are greater than
- * its current size that will fit. 
+ * its current size that will fit. If none are found, it will then
+ * expand the heap to allocate the correct amount of space.
+ * When mm_realloc is called it checks to see if the size passed in is 
+ * to see if more space needs to be allocated. If not, it just returns 
+ * the current pointer and frees any extra space. If it requires extra
+ * space it will first coalesce with blocks to make sure that there is
+ * no space, then if there is not enough space it will allocate
+ * more memory on the heap. When mm_free is called, it will first
+ * coalesce with blocks nearby and then add it to the segregated free
+ * list. 
+ * 
+ * The segregated free list pointers are stored in a seg_list_arr. There
+ * are 15 of these pointers, so the amount of global memory used is 
+ * 120 bytes. 
  */
 #include <stdio.h>
 #include <stdlib.h>
@@ -85,19 +101,21 @@ typedef struct seg_block{
 //	void* bp;
 } seg_block;
 
-
-//for now starting with only 10 values in key-value mapping
+//number of entries in seg_list_arr
 #define NUM_KEYS 15
 seg_block* seg_list_arr[NUM_KEYS];
-
-//returns log base 2 of size
+/**********************************************************
+ * log_hash
+ * hashing function used to return the log base 2 of the 
+ * input. Used to determine which entry of seg_list_arr
+ * to store the free block. 
+**********************************************************/
 int log_hash(size_t size){
 
 	int index = 0;
 	size_t val = 1;
 	
 	//keep shifting val to the left until it's bigger than size
-	
 	while(val < size) {
 		val <<= 1;
 		index++;
@@ -109,26 +127,39 @@ int log_hash(size_t size){
 	return index;
 	
 }
-
+/**********************************************************
+ * add_to_seg_list
+ * This function adds a given block bp into the appropropriate
+ * spot in the segregated free list determined by log_hash.
+**********************************************************/
 void add_to_seg_list(void* bp){
 	size_t size = GET_SIZE(HDRP(bp));
 	int index = log_hash(size);
-	//seg_block* block = build_block(bp, seg_list_arr[index], NULL);
-	//printf("adding to seg list at index: %d address %x\n",index,seg_list_arr[index]);
 	//seg list empty
 	if(seg_list_arr[index] == NULL){
 		seg_list_arr[index] = (seg_block*) bp;
 		seg_list_arr[index]->next = NULL;
 		seg_list_arr[index]->prev = NULL;
-	}else{ //seg list not empty, add to the front
+	}else{ 
+		//seg list not empty, add to the front
 		seg_list_arr[index]->prev = (seg_block*) bp;
 		seg_list_arr[index]->prev->next = seg_list_arr[index];
 		seg_list_arr[index]->prev->prev = NULL;
 		seg_list_arr[index] = (seg_block*) bp;
 	}
 }
-
-// remove block from seg_list given block pointer sp
+/**********************************************************
+ * rm_from_seg_list_sp
+ * This function removes a given block sp from the segregated
+ * free list. This function is typically used when a block is
+ * found in the list that can be used for allocation. There
+ * are 4 cases:
+ * 1) sp is the only block in the list
+ * 2) sp is the head of the list
+ * 3) sp is the middle of the list (adjacent blocks are free)
+ * 4) sp is in the end of the list
+ * All of which require different handling. 
+**********************************************************/
 void rm_from_seg_list_sp(int index, seg_block* sp){
 	//case where there's just one block
 	if(sp->prev == NULL && sp->next == NULL) {
@@ -153,14 +184,13 @@ void rm_from_seg_list_sp(int index, seg_block* sp){
     //null out sp
     sp->next = NULL;
     sp->prev = NULL;
-    // free sp
-    //mm_free_ori(sp);
 }
 
 /**********************************************************
  * mm_init
  * Initialize the heap, including "allocation" of the
- * prologue and epilogue
+ * prologue and epilogue. This is where the segregated free
+ * list is first initialized, and all entries are NULL. 
  **********************************************************/
  int mm_init(void)
  {
@@ -187,15 +217,16 @@ void rm_from_seg_list_sp(int index, seg_block* sp){
  * - the next block is available for coalescing
  * - the previous block is available for coalescing
  * - both neighbours are available for coalescing
+ * Additionally, if blocks are coalesced, they are also 
+ * properly removed and added back to the list to the appropriate
+ * size. 
  **********************************************************/
 void *coalesce_seg(void *bp)
 {
-    //printf("coalesce called\n");
     //mm_check();
 	size_t prev_alloc = GET_ALLOC(FTRP(PREV_BLKP(bp)));
     size_t next_alloc = GET_ALLOC(HDRP(NEXT_BLKP(bp)));
     size_t size = GET_SIZE(HDRP(bp));
-    //printf("size: %ld\n", size);
     if (prev_alloc && next_alloc) {       /* Case 1 */
         return bp;
     }
@@ -208,11 +239,7 @@ void *coalesce_seg(void *bp)
     	size += new_size;
         PUT(HDRP(bp), PACK(size, 0));
         PUT(FTRP(bp), PACK(size, 0));
-        //configure seg list to move the coalesced blocks together
-        //can either divide up the blocks into further blocks to try to get good fit
-        //or just leave it and potentially get higher internal fragmentation
-        // remove next block from seg list
-
+       
         return (bp);
     }
 
@@ -223,7 +250,6 @@ void *coalesce_seg(void *bp)
     	size += new_size;
         PUT(FTRP(bp), PACK(size, 0));
         PUT(HDRP(PREV_BLKP(bp)), PACK(size, 0));
-        // remove prev block from seg list
 
         return (PREV_BLKP(bp));
     }
@@ -273,7 +299,7 @@ void *extend_heap_seg(size_t words)
 }
 /**********************************************************
  * find_fit_seg
- * Traverse the free list stargin from key values then
+ * Traverse the free list starting from key values then
  * moving onto linked list searching for a block to fit asize
  * Return NULL if no free blocks can handle that size
  * Assumed that asize is aligned
@@ -281,7 +307,6 @@ void *extend_heap_seg(size_t words)
 
 void * find_fit_seg(size_t asize)
 {
-    //printf("in find_fit_seg\n");
 	int index = log_hash(asize);
     void* bp;
     seg_block* sp = NULL;
@@ -302,9 +327,12 @@ void * find_fit_seg(size_t asize)
     		    rm_from_seg_list_sp(index, sp);
     		    return bp;
             }else{
+            	//the block can fit and also be broken up into 2 pieces
+            	//for better memory usage
             	if(sp!=NULL){
-					//split up blocks into 2
-            		//printf("special split:\n");
+					//split up blocks into 2, the first part of the block
+            		//is returned to the user, the second part is added
+            		//to the free list. 
 					rm_from_seg_list_sp(index, sp);
 					size_t extra_size = GET_SIZE(HDRP(bp)) - asize;
 					
@@ -348,8 +376,6 @@ void place(void* bp, size_t asize)
  **********************************************************/
 void mm_free(void *bp)
 {
-    //fix the blocks in the coalesce function
-	//printf("free called\n");
 	if(bp == NULL){
       return;
     }
@@ -461,6 +487,11 @@ void *mm_realloc(void *ptr, size_t size)
     		memmove(newptr, oldptr, oldSize - DSIZE);
     		
     		size_t extra_size = new_block_size - asize;
+    		/*
+    		PUT(HDRP(newptr),PACK(new_block_size,1));
+    		PUT(FTRP(newptr),PACK(new_block_size,1));
+    		return newptr;
+    		*/
     		
     		if(extra_size >= 2 * DSIZE) {
 			//add new header and footer and return
@@ -482,6 +513,7 @@ void *mm_realloc(void *ptr, size_t size)
         		
         		return newptr;	
     		}
+    		
     	}
     	
     	PUT(HDRP(newptr),PACK(new_block_size,0));
@@ -527,13 +559,6 @@ void *mm_realloc(void *ptr, size_t size)
     	}
     }
     
-/*    if (size < copySize)
-      copySize = size;
-    memcpy(newptr, oldptr, copySize);
-    mm_free(oldptr);
-
-    return newptr;
-*/
     return NULL;
 }
 
@@ -569,12 +594,12 @@ int mm_check(void){
 		
 		heap_start = NEXT_BLKP(heap_start);
 		
-		//check for escape coalescing
+		//check for any blocks that escape coalescing
 		if(curr_alloc == 0 && GET_ALLOC(HDRP(heap_start)) == 0){
 			printf("block escaped coalescing, but this could be fine if this was called before coalesce\n");
 		}
 		
-		//check for overlap
+		//check for overlap between any blocks
 		if(FTRP(heap_start) > HDRP(NEXT_BLKP(heap_start)) ){
 			printf("THERE IS BLOCK OVERLAP at: %x\n",heap_start);
 			return 0;
